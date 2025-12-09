@@ -91,7 +91,11 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+
+    swiglu_layer = layers.SwiGLU(d_model=d_model, d_ff=d_ff)
+    swiglu_layer.load_state_dict({"W1": w1_weight, "W2": w2_weight, "W3": w3_weight})
+    result = swiglu_layer(in_features)
+    return result
 
 
 def run_scaled_dot_product_attention(

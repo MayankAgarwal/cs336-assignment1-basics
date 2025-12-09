@@ -81,3 +81,41 @@ class RMSNorm(nn.Module):
         rms_norm = x * self.gain / rms
         rms_norm = rms_norm.to(dtype=dtype_orig)
         return rms_norm
+
+
+def SiLU(x: torch.Tensor) -> torch.Tensor:
+    return x * torch.sigmoid(x)
+
+
+class SwiGLU(nn.Module):
+    def __init__(self, d_model: int, d_ff: int, dtype=None, device=None):
+
+        super().__init__()
+
+        self.W1 = self.__get_linear_weights__(
+            in_features=d_ff, out_features=d_model, dtype=dtype, device=device
+        )
+        self.W2 = self.__get_linear_weights__(
+            in_features=d_model, out_features=d_ff, dtype=dtype, device=device
+        )
+        self.W3 = self.__get_linear_weights__(
+            in_features=d_ff, out_features=d_model, dtype=dtype, device=device
+        )
+
+    def __get_linear_weights__(
+        self, in_features: int, out_features: int, dtype=None, device=None
+    ):
+        weights = nn.init.trunc_normal_(
+            torch.empty(size=(in_features, out_features), dtype=dtype, device=device),
+            mean=0,
+            std=2.0 / (in_features + out_features),
+        )
+        return nn.Parameter(weights)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        x1 = SiLU(einsum(x, self.W1, "... d_model, d_ff d_model -> ... d_ff"))
+        x2 = x1 * einsum(x, self.W3, "... d_model, d_ff d_model -> ... d_ff")
+
+        result = einsum(x2, self.W2, "... d_ff, d_model d_ff -> ... d_model")
+        return result
