@@ -9,6 +9,8 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
+from cs336_basics.transformer import layers
+
 
 def run_linear(
     d_in: int,
@@ -29,7 +31,10 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    raise NotImplementedError
+    linear_layer = layers.Linear(in_features=d_in, out_features=d_out)
+    linear_layer.load_state_dict({"W": weights})
+    out_features = linear_layer(in_features)
+    return out_features
 
 
 def run_embedding(
@@ -51,7 +56,10 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    raise NotImplementedError
+    embed_layer = layers.Embedding(num_embeddings=vocab_size, embedding_dim=d_model)
+    embed_layer.load_state_dict({"embed_weights": weights})
+    out_embeds = embed_layer(token_ids)
+    return out_embeds
 
 
 def run_swiglu(
@@ -378,7 +386,11 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+
+    rmsnorm_layer = layers.RMSNorm(d_model=d_model, eps=eps)
+    rmsnorm_layer.load_state_dict({"gain": weights})
+    result = rmsnorm_layer(in_features)
+    return result
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -452,7 +464,9 @@ def run_cross_entropy(
     raise NotImplementedError
 
 
-def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
+def run_gradient_clipping(
+    parameters: Iterable[torch.nn.Parameter], max_l2_norm: float
+) -> None:
     """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
 
     Args:
