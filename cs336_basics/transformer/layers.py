@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
+from torch import Tensor
 
+from math import sqrt
 from einops import einsum, reduce
+from jaxtyping import Float, Bool
 
 
 class Linear(nn.Module):
@@ -191,3 +194,25 @@ def softmax(x: torch.Tensor, dimension: int) -> torch.Tensor:
     Z = x_exp.sum(dim=dimension, keepdim=True)
     x_softmax = x_exp / Z
     return x_softmax
+
+
+def scaled_dot_product_attention(
+    Q: Float[Tensor, "... queries d_k"],
+    K: Float[Tensor, "... keys d_k"],
+    V: Float[Tensor, "... values d_v"],
+    mask: Bool[Tensor, "... queries keys"] | None = None,
+) -> Float[Tensor, "... queries d_v"]:
+
+    d_k = Q.shape[-1]
+
+    qk = einsum(Q, K, "... queries d_k, ... keys d_k -> ... queries keys") / sqrt(d_k)
+
+    if mask is not None:
+        qk = torch.where(mask == False, float("-inf"), qk)
+
+    qk = softmax(x=qk, dimension=-1)
+
+    assert V.shape[-2] == K.shape[-2], f"Number of values and keys do not match"
+    # TODO: V is (... values d_v) but we use (... keys d_v) for einsum to work
+    attn = einsum(qk, V, "... queries keys, ... keys d_v -> ... queries d_v")
+    return attn
