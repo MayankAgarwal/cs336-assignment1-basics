@@ -183,3 +183,11 @@ class RoPE(nn.Module):
         x[..., idxs_odd] = rotated_odd
 
         return x
+
+
+def softmax(x: torch.Tensor, dimension: int) -> torch.Tensor:
+
+    x_exp = torch.exp(x - torch.max(input=x, dim=dimension, keepdim=True).values)
+    Z = x_exp.sum(dim=dimension, keepdim=True)
+    x_softmax = x_exp / Z
+    return x_softmax
