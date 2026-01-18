@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from math import sqrt
-from einops import einsum, reduce
+from einops import einsum, reduce, rearrange
 from jaxtyping import Float, Bool
 
 
@@ -216,3 +216,88 @@ def scaled_dot_product_attention(
     # TODO: V is (... values d_v) but we use (... keys d_v) for einsum to work
     attn = einsum(qk, V, "... queries keys, ... keys d_v -> ... queries d_v")
     return attn
+
+
+class CausalMultiHeadSelfAttention(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        rope_theta: float = None,
+        max_seq_len: int = None,
+    ):
+        super().__init__()
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+
+        self.d_k = self.d_v = self.d_model // self.num_heads
+        assert self.d_k * num_heads == self.d_model
+
+        if rope_theta is not None and max_seq_len is not None:
+            self.enable_rope = True
+            self.rope = RoPE(theta=rope_theta, d_k=self.d_k, max_seq_len=max_seq_len)
+        else:
+            self.enable_rope = False
+
+        self.q_proj = Linear(
+            in_features=self.d_model, out_features=self.num_heads * self.d_k
+        )
+        self.k_proj = Linear(
+            in_features=self.d_model, out_features=self.num_heads * self.d_k
+        )
+        self.v_proj = Linear(
+            in_features=self.d_model, out_features=self.num_heads * self.d_v
+        )
+        self.out_proj = Linear(
+            in_features=self.num_heads * self.d_v, out_features=self.d_model
+        )
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+
+        self.q_proj.load_state_dict({"W": state_dict["q_proj"]})
+        self.k_proj.load_state_dict({"W": state_dict["k_proj"]})
+        self.v_proj.load_state_dict({"W": state_dict["v_proj"]})
+        self.out_proj.load_state_dict({"W": state_dict["out_proj"]})
+
+    def forward(
+        self, x: Float[Tensor, "... sequence_length d_in"], token_positions=None
+    ) -> Float:
+
+        seq_len = x.shape[-2]
+
+        Q = rearrange(
+            self.q_proj(x),
+            "... seq_len (h d_k) -> ... h seq_len d_k",
+            h=self.num_heads,
+            d_k=self.d_k,
+        )
+        K = rearrange(
+            self.k_proj(x),
+            "... seq_len (h d_k) -> ... h seq_len d_k",
+            h=self.num_heads,
+            d_k=self.d_k,
+        )
+        V = rearrange(
+            self.v_proj(x),
+            "... seq_len (h d_v) -> ... h seq_len d_v",
+            h=self.num_heads,
+            d_v=self.d_v,
+        )
+
+        mask = torch.tril(torch.ones(size=(seq_len, seq_len))).bool()
+
+        # Apply Rotary Position Encodings
+        if self.enable_rope:
+            assert token_positions is not None
+            Q = self.rope(x=Q, token_positions=token_positions)
+            K = self.rope(x=K, token_positions=token_positions)
+
+        attn = rearrange(
+            scaled_dot_product_attention(Q=Q, K=K, V=V, mask=mask),
+            "... h seq_len d_v -> ... seq_len (h d_v)",
+            h=self.num_heads,
+            d_v=self.d_v,
+        )
+        attn = self.out_proj(attn)
+        return attn
