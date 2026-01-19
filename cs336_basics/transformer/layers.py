@@ -4,7 +4,7 @@ from torch import Tensor
 
 from math import sqrt
 from einops import einsum, reduce, rearrange
-from jaxtyping import Float, Bool
+from jaxtyping import Float, Bool, Int
 
 
 class Linear(nn.Module):
@@ -301,3 +301,138 @@ class CausalMultiHeadSelfAttention(nn.Module):
         )
         attn = self.out_proj(attn)
         return attn
+
+
+class TransformerBlock(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        max_seq_len: int,
+        rope_theta: float,
+    ):
+
+        super().__init__()
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.max_seq_len = max_seq_len
+        self.rope_theta = rope_theta
+
+        self.causal_mha = CausalMultiHeadSelfAttention(
+            d_model=d_model,
+            num_heads=num_heads,
+            rope_theta=rope_theta,
+            max_seq_len=max_seq_len,
+        )
+
+        self.ffn = SwiGLU(d_model=d_model, d_ff=d_ff)
+
+        self.norm_attn = RMSNorm(d_model=d_model)
+        self.norm_ffn = RMSNorm(d_model=d_model)
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+
+        # load attention weights
+        attn_state_dict = {
+            "q_proj": state_dict["attn.q_proj.weight"],
+            "k_proj": state_dict["attn.k_proj.weight"],
+            "v_proj": state_dict["attn.v_proj.weight"],
+            "out_proj": state_dict["attn.output_proj.weight"],
+        }
+        self.causal_mha.load_state_dict(attn_state_dict)
+
+        # load rmsnorm weights
+        self.norm_attn.load_state_dict({"gain": state_dict["ln1.weight"]})
+        self.norm_ffn.load_state_dict({"gain": state_dict["ln2.weight"]})
+
+        # load ffn weights
+        self.ffn.load_state_dict(
+            {
+                "W1": state_dict["ffn.w1.weight"],
+                "W2": state_dict["ffn.w2.weight"],
+                "W3": state_dict["ffn.w3.weight"],
+            }
+        )
+
+    def forward(
+        self, x: Float[Tensor, "batch sequence_length d_model"]
+    ) -> Float[Tensor, "batch sequence_length d_model"]:
+
+        seq_len = x.shape[1]
+        token_positions = torch.arange(start=0, end=seq_len).view(1, -1)
+
+        x = x + self.causal_mha(x=self.norm_attn(x), token_positions=token_positions)
+        x = x + self.ffn(self.norm_ffn(x))
+        return x
+
+
+class Transformer(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        context_length: int,
+        rope_theta: float,
+        vocab_size: int,
+        num_layers: int,
+    ):
+        super().__init__()
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.context_length = context_length
+        self.rope_theta = rope_theta
+        self.vocab_size = vocab_size
+        self.num_layers = num_layers
+
+        self.embeds_token = Embedding(num_embeddings=vocab_size, embedding_dim=d_model)
+        self.transformer_blocks = nn.Sequential()
+        for _ in range(num_layers):
+            self.transformer_blocks.append(
+                TransformerBlock(
+                    d_model=d_model,
+                    num_heads=num_heads,
+                    d_ff=d_ff,
+                    max_seq_len=context_length,
+                    rope_theta=rope_theta,
+                )
+            )
+
+        self.norm = RMSNorm(d_model=d_model)
+        self.lm_head = Linear(in_features=d_model, out_features=vocab_size)
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+
+        # load token embeddings
+        self.embeds_token.load_state_dict(
+            {"embed_weights": state_dict["token_embeddings.weight"]}
+        )
+
+        # load transformer blocks weights
+        for layer in range(self.num_layers):
+            block_state_dict = {}
+            for key, val in state_dict.items():
+                if key.startswith(f"layers.{layer}."):
+                    block_state_dict[key.replace(f"layers.{layer}.", "")] = val
+
+            self.transformer_blocks[layer].load_state_dict(block_state_dict)
+
+        # final layer norm weight
+        self.norm.load_state_dict({"gain": state_dict["ln_final.weight"]})
+
+        # lm head weight
+        self.lm_head.load_state_dict({"W": state_dict["lm_head.weight"]})
+
+    def forward(self, in_indices: Int[Tensor, "batch_size sequence_length"]):
+
+        x = self.embeds_token(in_indices)
+        x = self.transformer_blocks(x)
+        x = self.norm(x)
+        x = self.lm_head(x)
+
+        return x
